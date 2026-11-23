@@ -1,0 +1,5 @@
+# Install torch and torchvision for your CUDA version first (https://pytorch.org), then:
+timm>=1.0.27
+numpy>=2.0
+tqdm>=4.67
+pillow
