@@ -88,7 +88,7 @@ def main():
                         '--importance fisher).')
     p.add_argument('--importance', '--fim-mode', dest='importance',
                    choices=['fisher', 'magnitude'], default='fisher',
-                   help="Pruning importance metric. 'fisher' = exact empirical Fisher "
+                   help="Pruning importance metric. 'fisher' = same-token Fisher score "
                         "(1/T)*sum_t(g*x)^2 (DEFAULT, chosen 2026-07-11); 'magnitude' = "
                         "data-free weight norm (see --mag-norm), NO calib pass. "
                         "The 'dplr' variant was REMOVED 2026-07-13 (self-devised, not used "

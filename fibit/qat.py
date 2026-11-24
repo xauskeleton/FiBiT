@@ -360,7 +360,7 @@ def compute_weight_dplr_fim(model, calib_loader, device,
       p1: weight for rank-k (L2) component
       p2: weight for diag (L1) component
       fim_mode: 'dplr' | 'rank' | 'diag' | 'fisher' — switch for ablation
-        'fisher' = exact empirical Fisher diagonal, per-token, WITHOUT the g⊥x
+        'fisher' = same-token Fisher score (paper Eq. 1), per-token, WITHOUT the g⊥x
         factorization the others use: F(W_ij) = (1/T) Σ_t g_i(t)²·x_j(t)²,
         computed as matmul (g²)ᵀ(x²) so the per-token g–x correlation is kept
         (vs 'rank' = factorized E[g²]·E[x²]). Costs one (out,in) accumulator +
@@ -375,7 +375,7 @@ def compute_weight_dplr_fim(model, calib_loader, device,
     x_sq  = {n: 0.0 for n in targets}   # E[x²] per input channel
     g_abs = {n: 0.0 for n in targets}   # E[|g|]  per output channel  (for diag)
     g_sq  = {n: 0.0 for n in targets}   # E[g²]   per output channel  (for rank-k)
-    gx_sq = {n: 0.0 for n in targets}   # exact Fisher: Σ_t g_i(t)²·x_j(t)²  (out,in)
+    gx_sq = {n: 0.0 for n in targets}   # same-token Fisher: Σ_t g_i(t)²·x_j(t)²  (out,in)
     tok   = {n: 0 for n in targets}     # token count per layer (fisher mode)
     x_cache = {}                        # fisher: per-layer x² (T,in) between fwd & bwd
     n_samples = 0
@@ -430,7 +430,7 @@ def compute_weight_dplr_fim(model, calib_loader, device,
         if fim_mode == 'fisher':
             if isinstance(gx_sq[name], float):       # layer never saw a gradient
                 continue
-            fim[name] = (gx_sq[name] / max(tok[name], 1)).cpu()  # (out,in) exact Fisher
+            fim[name] = (gx_sq[name] / max(tok[name], 1)).cpu()  # (out,in) same-token Fisher
             continue
         if isinstance(g_abs[name], float):
             continue
@@ -458,7 +458,7 @@ def _partition_score(weight, fim, partition):
     """Per-weight importance for the APB partition. Convention: LOW score → binarize,
     HIGH score (top `1-binary_ratio`) → kept full-precision outlier.
 
-      'fisher'    → empirical-Fisher importance (FIM-guided, our method; needs precomputed `fim`)
+      'fisher'    → same-token Fisher importance (FIM-guided, our method; needs precomputed `fim`)
       'magnitude' → |w| (pure APB: keep the largest-magnitude weights FP)
 
     Returns a CPU float tensor shaped like the weight (out, in)."""
@@ -862,7 +862,7 @@ def main():
     p.add_argument('--partition', choices=['fisher', 'magnitude'], default='magnitude',
                    help='APB binary/FP partition criterion (which weights stay FP outliers). '
                         '"magnitude" = keep largest-|w| FP (standard APB; DEFAULT). '
-                        '"fisher" = keep highest empirical-Fisher weights FP (FIM-guided, our method; '
+                        '"fisher" = keep highest Fisher-score weights FP (FIM-guided, our method; '
                         'needs a FIM pass). Renamed from "fim" 2026-07-13: the ambiguous "fim" name '
                         '(defaulted to self-devised dplr) was dropped — only rigorous fisher.')
     p.add_argument('--act-bits', type=int, default=0,
@@ -903,7 +903,7 @@ def main():
                         'sets rank k for the DPLR loss.')
     p.add_argument('--importance', '--fim-mode', dest='importance', type=str,
                    default='fisher', choices=['fisher'],
-                   help="FIM variant for partition='fisher'. Only 'fisher' (exact empirical Fisher) — "
+                   help="FIM variant for partition='fisher'. Only 'fisher' (same-token Fisher score) — "
                         "the self-devised 'dplr' variant was removed 2026-07-13. Ignored when "
                         "partition=magnitude. (The DPLR distillation loss builds its own FIM, independent.)")
     p.add_argument('--fim-p1', type=float, default=1.0,
