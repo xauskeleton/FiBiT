@@ -1,24 +1,16 @@
 """
 FiBiT stage 3: hybrid binarization (APB-style) + DPLR-guided QAT.
 
-APB QAT on Swin / ViT (DeiT) — DPLR-FIM-based partition + end-to-end fine-tuning.
-Model chosen with --model (default swin_small_patch4_window7_224).
-
-Importance ranking uses FIMA-Q's DPLR-FIM (Diagonal + Low-Rank, paper Eq 20-21):
-    F_DPLR(W_ij) = (p1 · E[(∇z_i)²]  +  p2 · E[|∇z_i|]) · E[x_j²]
-                    ↑ rank-k (L2)       ↑ diag (L1)      ↑ activation
-    Mask = (F_DPLR < τ percentile)
-
 Flow:
-  1. Load pretrained model (Swin/ViT/DeiT via --model)
-  2. Compute DPLR-FIM (k=5 gradient samples by default, ~5 forward+backward)
-  3. For each target Linear (96 of them, skip head/downsample/patch_embed):
-        mask = (F_DPLR(W) < τ)
-        wrap with APBLinear (binary zone: α·sign(w), FP zone: latent_weight)
-  4. QAT: train end-to-end with CE loss on Tiny ImageNet
-     - latent_weight + α learnable; mask FROZEN
-     - Freeze α at half epochs (paper APB convention)
-  5. Save best model
+  1. Load the pruned FP model (--init-model) or a fine-tuned unpruned one (--baseline-ckpt).
+  2. Wrap every linear layer (incl. patch merging and the classifier) in an APBLinear:
+     weights below the r_b-quantile of the partition score (|W| by default, or the
+     Fisher score with --partition fisher) become alpha*sign(W); the rest stay FP.
+     The mask is fixed during QAT.
+  3. Quantize the input of every APBLinear to 1 or 2 bits (--act-bits).
+  4. QAT on CIFAR with CE + lambda * DPLR block loss (--use-dplr-loss), teacher = the
+     frozen FP model; alpha is frozen after half of the epochs.
+  5. Save best.pth and the packed model best_packed.pt.
 
 USAGE
 =====
@@ -48,8 +40,6 @@ import timm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / 'scripts'))
-# Data loaders are imported lazily inside main() per --dataset, so that e.g. a
-# CIFAR run does not require HuggingFace `datasets` (needed only by the tiny loader).
 
 # Finetuned FP baseline. QAT initialises from this (if present & shape-compatible)
 # instead of raw timm-pretrained weights, so quantization starts from a model that is
@@ -66,7 +56,7 @@ def init_from_baseline(model, ckpt_path=None):
 
     Returns 'loaded' on success, 'none' if no checkpoint file, or 'mismatch' if the
     saved weights are shape-incompatible (e.g. a Swin ckpt against a DeiT model, or
-    cifar100/100-class ckpt against a tiny/1000-class run) — model keeps timm-pretrained.
+    cifar100/100-class ckpt against a cifar10/10-class run) — model keeps timm-pretrained.
     """
     ckpt = Path(ckpt_path) if ckpt_path else DEFAULT_INIT_CKPT
     if not ckpt.exists():
@@ -934,18 +924,10 @@ def main():
     p.add_argument('--dplr-lambda', type=float, default=1.0,
                    help='Weight for DPLR loss vs CE loss (default 1.0). '
                         'total = CE + lambda · Σ_blocks L_DPLR')
-    p.add_argument('--dataset', choices=['tiny', 'imagenet1k', 'cifar10', 'cifar100'],
-       default='tiny',
-                   help='"tiny" (default) = HF tiny-imagenet, 91k/9.1k after IN-1k remap, '
-                        '~22 min/epoch on T4. '
-                        '"imagenet1k" = full ImageNet-1k from --data-dir (ImageFolder layout), '
-                        '~5h/epoch on T4 → only viable for PTQ or few-epoch QAT. '
-                        '"cifar10"/"cifar100" = torchvision (auto-download, no HF datasets), '
-                        '32px upsampled to 224; head re-created for 10/100 classes so the '
-                        'FP baseline starts near-random and must be trained.')
+    p.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar100',
+                   help='torchvision CIFAR (auto-download), 32px upsampled to 224.')
     p.add_argument('--data-dir', type=str, default='',
-                   help='Root dir for ImageNet-1k (must contain train/ and val/ ImageFolder layout). '
-                        'Required when --dataset=imagenet1k. Ignored for --dataset=tiny.')
+                   help='Download directory for CIFAR (default ./data).')
     p.add_argument('--num-workers', type=int, default=2)
     p.add_argument('--amp', action=argparse.BooleanOptionalAction, default=True,
                    help='CUDA mixed-precision (fp16) training. On by default '
@@ -960,7 +942,7 @@ def main():
                         'Pass "none" to disable file logging.')
     p.add_argument('--resume', type=str, default='',
                    help='Path to last.pth checkpoint to resume from (model+opt+sched+scaler+epoch). '
-                        'Use to recover after Kaggle session timeout. Mask is re-derived from '
+                        'Use to recover after a session timeout. Mask is re-derived from '
                         'the saved checkpoint, so --binary-ratio must match the original run.')
     p.add_argument('--init-model', type=str, default='',
                    help='Path to a WHOLE saved model object (torch.save(model), NOT a '
@@ -1008,28 +990,12 @@ def main():
     print(f'Args: {vars(args)}')
     print(f'='*60)
 
-    # ----- Data (loaders imported lazily so CIFAR doesn't pull HF `datasets`) -----
-    if args.dataset == 'tiny':
-        from tiny_imagenet_loader import TinyImageNetLoaderGenerator
-        g = TinyImageNetLoaderGenerator(val_batch_size=args.batch_size,
-                                         num_workers=args.num_workers)
-        num_classes = 1000  # tiny labels remapped onto IN-1k head
-    elif args.dataset == 'imagenet1k':
-        if not args.data_dir:
-            raise ValueError('--data-dir is required when --dataset=imagenet1k')
-        from imagenet1k_loader import ImageNet1kLoaderGenerator
-        g = ImageNet1kLoaderGenerator(data_dir=args.data_dir,
-                                       val_batch_size=args.batch_size,
-                                       num_workers=args.num_workers)
-        num_classes = 1000
-    elif args.dataset in ('cifar10', 'cifar100'):
-        from cifar_loader import CifarLoaderGenerator
-        g = CifarLoaderGenerator(which=args.dataset, data_dir=args.data_dir,
-                                 val_batch_size=args.batch_size,
-                                 num_workers=args.num_workers)
-        num_classes = g.num_classes
-    else:
-        raise ValueError(f'unknown dataset {args.dataset!r}')
+    # ----- Data -----
+    from cifar_loader import CifarLoaderGenerator
+    g = CifarLoaderGenerator(which=args.dataset, data_dir=args.data_dir,
+                             val_batch_size=args.batch_size,
+                             num_workers=args.num_workers)
+    num_classes = g.num_classes
     train_loader = torch.utils.data.DataLoader(
         g.train_set, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, pin_memory=True, drop_last=True)

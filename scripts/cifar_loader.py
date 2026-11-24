@@ -1,12 +1,10 @@
 """
-CIFAR-10 / CIFAR-100 dataloader matching TinyImageNetLoaderGenerator interface.
+CIFAR-10 / CIFAR-100 dataloaders.
 
 Swin-S is fixed at 224x224 (patch4/window7), so CIFAR's native 32x32 images are
 upsampled to 224 (bicubic) and normalized with ImageNet stats — this lets the
 ImageNet-pretrained backbone transfer. The classification head is created fresh
-for 10/100 classes (see --dataset handling in qat.py), so it must be trained.
-
-Downloads via torchvision (no HuggingFace `datasets` dependency).
+for 10/100 classes, so it must be trained. Downloads via torchvision.
 """
 from torchvision import transforms
 from torch.utils.data import DataLoader
@@ -14,7 +12,7 @@ from torchvision.datasets import CIFAR10, CIFAR100
 
 
 class CifarLoaderGenerator:
-    """Drop-in replacement for TinyImageNetLoaderGenerator using CIFAR-10/100."""
+    """Train/test sets and the test loader for CIFAR-10/100."""
     def __init__(self, which='cifar100', data_dir='', val_batch_size=64,
                  num_workers=2, train_augment=True):
         which = which.lower()

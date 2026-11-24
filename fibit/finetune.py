@@ -29,35 +29,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / 'scripts'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Data loaders imported lazily in build_data() per --dataset (the tiny loader
-# pulls HuggingFace `datasets`, which a CIFAR-only run should not require).
 from qat import evaluate, _Tee  # noqa: E402  (reuse identical eval + log tee)
 
 MODEL = 'swin_small_patch4_window7_224'
 
 
 def build_data(args):
-    if args.dataset == 'tiny':
-        from tiny_imagenet_loader import TinyImageNetLoaderGenerator
-        g = TinyImageNetLoaderGenerator(val_batch_size=args.batch_size,
-                                        num_workers=args.num_workers)
-        num_classes = 1000
-    elif args.dataset == 'imagenet1k':
-        if not args.data_dir:
-            raise ValueError('--data-dir is required when --dataset=imagenet1k')
-        from imagenet1k_loader import ImageNet1kLoaderGenerator
-        g = ImageNet1kLoaderGenerator(data_dir=args.data_dir,
-                                      val_batch_size=args.batch_size,
-                                      num_workers=args.num_workers)
-        num_classes = 1000
-    elif args.dataset in ('cifar10', 'cifar100'):
-        from cifar_loader import CifarLoaderGenerator
-        g = CifarLoaderGenerator(which=args.dataset, data_dir=args.data_dir,
-                                 val_batch_size=args.batch_size,
-                                 num_workers=args.num_workers)
-        num_classes = g.num_classes
-    else:
-        raise ValueError(f'unknown dataset {args.dataset!r}')
+    from cifar_loader import CifarLoaderGenerator
+    g = CifarLoaderGenerator(which=args.dataset, data_dir=args.data_dir,
+                             val_batch_size=args.batch_size,
+                             num_workers=args.num_workers)
+    num_classes = g.num_classes
 
     train_loader = torch.utils.data.DataLoader(
         g.train_set, batch_size=args.batch_size, shuffle=True,
@@ -68,12 +50,10 @@ def build_data(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--dataset', choices=['tiny', 'imagenet1k', 'cifar10', 'cifar100'],
-                   default='cifar100',
-                   help='Dataset (default cifar100). cifar*/torchvision auto-download; '
-                        'tiny/imagenet1k as in qat.py.')
+    p.add_argument('--dataset', choices=['cifar10', 'cifar100'], default='cifar100',
+                   help='torchvision CIFAR (auto-download), 32px upsampled to 224.')
     p.add_argument('--data-dir', type=str, default='',
-                   help='Root dir. Required for imagenet1k; download dir for cifar*.')
+                   help='Download directory for CIFAR (default ./data).')
     p.add_argument('--model', type=str, default=MODEL,
                    help=f'timm model to fine-tune (default {MODEL}). Use e.g. '
                         'deit_small_patch16_224 to build a per-arch FP baseline, then '
