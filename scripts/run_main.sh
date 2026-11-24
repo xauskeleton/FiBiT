@@ -38,7 +38,7 @@ DD=(); [ -n "$DATA_DIR" ] && DD=(--data-dir "$DATA_DIR")
 # ---- stage 1: FP fine-tuning ----
 FT="$OUT/ft/best.pth"
 if [ ! -f "$FT" ]; then
-  $PY fibit/finetune.py --dataset cifar100 "${DD[@]}" --model "$MODEL" \
+  $PY fibit/finetune.py --dataset cifar100 ${DD[@]+"${DD[@]}"} --model "$MODEL" \
     --epochs 50 --patience 15 --lr 1e-4 --weight-decay 1e-4 --label-smoothing 0.1 \
     --batch-size "$BATCH" --num-workers 2 --seed "$SEED" --out-dir "$OUT/ft" $DBG
 fi
@@ -46,7 +46,7 @@ fi
 # ---- stage 2: Fisher-guided structural pruning + recovery fine-tuning ----
 PRUNED="$OUT/pruned/best_pruned_model.pt"
 if [ ! -f "$PRUNED" ]; then
-  $PY fibit/prune_cifar.py --dataset cifar100 "${DD[@]}" --model "$MODEL" \
+  $PY fibit/prune_cifar.py --dataset cifar100 ${DD[@]+"${DD[@]}"} --model "$MODEL" \
     --baseline-ckpt "$FT" --importance fisher --rank-mode global --global-metric per_param \
     --head-ratio 0.5 --mlp-ratio 0.5 --min-heads 1 --mlp-keep-frac 0.05 --fim-batches 10 \
     --epochs 50 --patience 15 --lr 1e-4 --weight-decay 1e-4 --label-smoothing 0.1 \
@@ -58,7 +58,7 @@ for c in $CONFIGS; do
   BR="${c%:*}"; ACT="${c#*:}"
   Q="$OUT/prune_quant_br${BR}_act${ACT}"
   [ -f "$Q/best.pth" ] && { echo ">> skip $Q (done)"; continue; }
-  $PY fibit/qat.py --dataset cifar100 "${DD[@]}" --model "$MODEL" --init-model "$PRUNED" \
+  $PY fibit/qat.py --dataset cifar100 ${DD[@]+"${DD[@]}"} --model "$MODEL" --init-model "$PRUNED" \
     --binary-ratio "$BR" --partition magnitude --act-bits "$ACT" --act-init "$ACT_INIT" \
     --epochs 50 --patience 15 --lr 1e-4 --batch-size "$BATCH" --fim-batches 5 \
     --use-dplr-loss --dplr-lambda 3000 --fim-p1 1.0 --fim-p2 1.0 \
